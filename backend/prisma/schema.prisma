@@ -1,0 +1,125 @@
+// Prisma Schema for Payment Processing System
+// PostgreSQL — ACID compliant, row-level locking for concurrency control
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Payment Status Enum ──────────────────────────────────────────────────────
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+// ─── Webhook Event Status Enum ────────────────────────────────────────────────
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+// ─── Payments Table ───────────────────────────────────────────────────────────
+
+model Payment {
+  id                String  @id @default(uuid())
+  idempotencyKey    String  @unique @map("idempotency_key") @db.VarChar(255)
+  razorpayOrderId   String? @unique @map("razorpay_order_id") @db.VarChar(255)
+  razorpayPaymentId String? @map("razorpay_payment_id") @db.VarChar(255)
+  razorpaySignature String? @map("razorpay_signature") @db.VarChar(512)
+
+  amount   Int // Amount in smallest currency unit (paise for INR)
+  currency String        @default("INR") @db.VarChar(3)
+  status   PaymentStatus @default(PENDING)
+
+  // Retry configuration
+  retryCount  Int       @default(0) @map("retry_count")
+  maxRetries  Int       @default(3) @map("max_retries")
+  nextRetryAt DateTime? @map("next_retry_at")
+
+  // Failure tracking
+  failureReason String? @map("failure_reason") @db.Text
+  failureCode   String? @map("failure_code") @db.VarChar(100)
+
+  // Optimistic locking — prevents lost updates under concurrency
+  version Int @default(0)
+
+  // Flexible metadata (customer info, order details, etc.)
+  metadata Json?
+
+  // Audit timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  auditLogs PaymentAuditLog[]
+
+  @@index([status])
+  @@index([razorpayOrderId])
+  @@index([nextRetryAt])
+  @@map("payments")
+}
+
+// ─── Idempotency Keys Table ───────────────────────────────────────────────────
+// Stores cached responses for idempotent operations (24h TTL)
+
+model IdempotencyKey {
+  key        String   @id @db.VarChar(255)
+  response   Json // Cached HTTP response body
+  statusCode Int      @map("status_code")
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+// ─── Webhook Events Table ─────────────────────────────────────────────────────
+// Idempotent webhook processing — prevents duplicate event handling
+
+model WebhookEvent {
+  id              String        @id @default(uuid())
+  razorpayEventId String        @unique @map("razorpay_event_id") @db.VarChar(255)
+  eventType       String        @map("event_type") @db.VarChar(100)
+  paymentId       String?       @map("payment_id")
+  payload         Json // Raw webhook payload
+  status          WebhookStatus @default(RECEIVED)
+  processedAt     DateTime?     @map("processed_at")
+  errorMessage    String?       @map("error_message") @db.Text
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  @@index([eventType])
+  @@index([paymentId])
+  @@index([status])
+  @@map("webhook_events")
+}
+
+// ─── Payment Audit Logs Table ─────────────────────────────────────────────────
+// Immutable audit trail - full state transition history
+
+model PaymentAuditLog {
+  id         String   @id @default(uuid())
+  paymentId  String   @map("payment_id")
+  fromStatus String?  @map("from_status") @db.VarChar(50)
+  toStatus   String   @map("to_status") @db.VarChar(50)
+  actor      String   @db.VarChar(100) // "system", "webhook", "user", "retry_service"
+  reason     String?  @db.Text
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@index([createdAt])
+  @@map("payment_audit_logs")
+}
