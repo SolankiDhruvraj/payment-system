@@ -13,6 +13,11 @@ import logger from '../config/logger.js';
 // ─── Payment Service ──────────────────────────────────────────────────────────
 
 export class PaymentService {
+  constructor(gateway = razorpayGateway, cbService = circuitBreaker) {
+    this.gateway = gateway;
+    this.circuitBreaker = cbService;
+  }
+
   async initiatePayment({ amount, currency = 'INR', metadata = {}, idempotencyKey }) {
     logger.info('Initiating payment', { amount, currency, idempotencyKey });
 
